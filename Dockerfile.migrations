@@ -1,0 +1,11 @@
+# Migrations Dockerfile
+FROM migrate/migrate:latest
+
+# Copy migration files
+COPY migrations/ /migrations/
+
+# Set working directory
+WORKDIR /migrations
+
+# Default command
+CMD ["--help"]
