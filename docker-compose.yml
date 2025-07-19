@@ -1,30 +1,17 @@
-version: '3.8'
-
 services:
-  # PostgreSQL Database
-  postgres:
-    image: postgres:15-alpine
+  db:
+    image: postgres:15.5
     container_name: ${DB_CONTAINER_NAME:-taskflow-db}
+    restart: always
     environment:
       POSTGRES_USER: ${DB_USER:-postgres}
       POSTGRES_PASSWORD: ${DB_PASSWORD:-password}
       POSTGRES_DB: ${DB_NAME:-taskflow}
-      POSTGRES_INITDB_ARGS: "--encoding=UTF-8"
     ports:
       - "${DB_PORT:-5433}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./migrations/init.sql:/docker-entrypoint-initdb.d/init.sql
-    networks:
-      - taskflow-network
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-postgres} -d ${DB_NAME:-taskflow}"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
 
-  # TaskFlow API
   api:
     build:
       context: .
@@ -33,9 +20,9 @@ services:
     ports:
       - "${PORT:-8080}:8080"
     environment:
-      - PORT=8080
-      - ENV=${ENV:-development}
-      - DB_HOST=postgres
+      - SERVER_PORT=${PORT:-8080}
+      - SERVER_ENV=${ENV:-development}
+      - DB_HOST=db
       - DB_PORT=5432
       - DB_USER=${DB_USER:-postgres}
       - DB_PASSWORD=${DB_PASSWORD:-password}
@@ -43,42 +30,30 @@ services:
       - DB_SSL_MODE=disable
       - JWT_SECRET=${JWT_SECRET:-your_jwt_secret_here}
       - JWT_EXPIRY=${JWT_EXPIRY:-24h}
+    env_file:
+      - .env
     depends_on:
-      postgres:
-        condition: service_healthy
-    networks:
-      - taskflow-network
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
+      - db
 
-  # Database Migrations (optional)
   migrations:
     build:
       context: .
-      dockerfile: Dockerfile.migrations
-    container_name: taskflow-migrations
+      dockerfile: ./Dockerfile.migrations
+    container_name: ${MIGRATION_CONTAINER_NAME:-taskflow-migrations}
     environment:
-      - DB_HOST=postgres
-      - DB_PORT=5432
-      - DB_USER=${DB_USER:-postgres}
-      - DB_PASSWORD=${DB_PASSWORD:-password}
-      - DB_NAME=${DB_NAME:-taskflow}
-      - DB_SSL_MODE=disable
+      APP_DB_USERNAME: ${DB_USER:-postgres}
+      APP_DB_PASSWORD: ${DB_PASSWORD:-password}
+      APP_DB_HOST: ${DOCKER_DB_HOST:-db}
+      APP_DB_PORT: "5432"
+      APP_DB_DATABASE: ${DB_NAME:-taskflow}
     depends_on:
-      postgres:
-        condition: service_healthy
+      - db
     networks:
-      - taskflow-network
-    profiles:
-      - migration
-
-networks:
-  taskflow-network:
-    driver: bridge
+      - local_net
 
 volumes:
   postgres_data:
+
+networks:
+  local_net:
+    name: ${NETWORK_NAME:-local_net}
