@@ -54,25 +54,23 @@ help: ## Show this help message
 	@echo "${YELLOW}Utility Commands:${NC}"
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' Makefile | grep -vE "(dev|run|test|lint|format|build|setup|clean|vet|mod|docker|up|down|logs|start|stop|db|migrate|prod|deploy|release)" | awk 'BEGIN {FS = ":.*?## "}; {printf "  ${GREEN}%-20s${NC} %s\n", $$1, $$2}' | sort
 
-## Development Commands
+## Main Setup Commands
 .PHONY: setup
-setup: ## Setup development environment
-	@echo "Setting up development environment..."
-	@cp .env.example .env
-	@go mod tidy
-	@echo "✅ Setup complete! Please update .env with your settings."
-
-.PHONY: dev-setup
-dev-setup: ## Complete development environment setup
-	@echo "${BLUE}🔧 Setting up development environment...${NC}"
-	@$(MAKE) check-deps
+setup: ## Start all containers (db, api, migrations), wait for DB readiness, and run migrations
+	@echo "${BLUE}🚀 Setting up complete TaskFlow environment...${NC}"
 	@$(MAKE) env-check
-	@$(MAKE) docker-down
-	@$(MAKE) docker-build
-	@$(MAKE) db-up
-	@$(MAKE) migrate
-	@echo "${GREEN}✅ Development environment ready!${NC}"
+	@echo "${BLUE}📦 Building containers...${NC}"
+	@$(DOCKER_COMPOSE) build
+	@echo "${BLUE}🐳 Starting all services...${NC}"
+	@$(DOCKER_COMPOSE) up -d db api
+	@echo "${YELLOW}⏳ Waiting for database to be ready...${NC}"
+	@$(MAKE) db-wait
+	@echo "${BLUE}🔄 Running database migrations...${NC}"
+	@$(MAKE) migrate-up
+	@echo "${GREEN}✅ Setup complete! All services are running with migrations applied.${NC}"
+	@$(MAKE) status
 
+## Development Commands
 .PHONY: run
 run: ## Run the application
 	@echo "🚀 Starting TaskFlow API..."
@@ -163,6 +161,50 @@ docker-build: ## Build Docker image
 	@docker build -t $(DOCKER_IMAGE):$(DOCKER_TAG) .
 	@echo "✅ Docker image built: $(DOCKER_IMAGE):$(DOCKER_TAG)"
 
+## Migration Commands (Using Goose)
+.PHONY: install-goose
+install-goose: ## Install Goose migration tool
+	@echo "📦 Installing Goose..."
+	@go install github.com/pressly/goose/v3/cmd/goose@latest
+	@echo "✅ Goose installed"
+
+.PHONY: migrate-up
+migrate-up: ## Run all pending migrations
+	@echo "🔄 Running migrations..."
+	@goose -dir migrations postgres "$(DB_URL)" up
+	@echo "✅ Migrations complete"
+
+.PHONY: migrate-down
+migrate-down: ## Rollback last migration
+	@echo "⬇️  Rolling back last migration..."
+	@goose -dir migrations postgres "$(DB_URL)" down
+	@echo "✅ Rollback complete"
+
+.PHONY: migrate-status
+migrate-status: ## Show migration status
+	@echo "📊 Migration status:"
+	@goose -dir migrations postgres "$(DB_URL)" status
+
+.PHONY: migrate-create
+migrate-create: ## Create new migration (requires NAME variable)
+	@if [ -z "$(NAME)" ]; then \
+		echo "${RED}❌ Error: NAME variable is required${NC}"; \
+		echo "${BLUE}💡 Usage: make migrate-create NAME=your_migration_name${NC}"; \
+		echo "${BLUE}💡 Example: make migrate-create NAME=create_users_table${NC}"; \
+		exit 1; \
+	fi
+	@echo "${BLUE}📝 Creating migration: $(NAME)${NC}"
+	@goose -dir migrations create $(NAME) sql
+	@echo "${GREEN}✅ Migration created successfully${NC}"
+
+.PHONY: migrate-reset
+migrate-reset: ## Reset all migrations (WARNING: This will delete all data)
+	@echo "⚠️  WARNING: This will delete all migration data!"
+	@echo "Are you sure? [y/N] \c" && read ans && [ "$$ans" = y ] || { echo "❌ Migration reset cancelled"; exit 1; } \
+	&& echo "Resetting migrations..." \
+	&& goose -dir migrations postgres "$(DB_URL)" reset \
+	&& echo "✅ Database reset complete"
+
 ## Enhanced Database Commands
 .PHONY: db-wait
 db-wait: ## Wait for database to be ready
@@ -173,54 +215,39 @@ db-wait: ## Wait for database to be ready
 ## Enhanced Logging Commands
 .PHONY: logs-api
 logs-api: ## Show API logs only
-	@$(DOCKER_COMPOSE) logs -f api
+	@if [ "$$(docker ps -q -f name=api)" = "" ]; then \
+		echo "❌ API container is not running."; \
+	else \
+		$(DOCKER_COMPOSE) logs -f api; \
+	fi
 
 .PHONY: logs-db
 logs-db: ## Show database logs only
-	@$(DOCKER_COMPOSE) logs -f db
-
-## Enhanced Migration Commands
-.PHONY: goose-check
-goose-check: ## Check if Goose is available and database is accessible
-	@command -v goose >/dev/null 2>&1 || (echo "${RED}❌ Goose is not installed or not in PATH${NC}" && exit 1)
-	@if ! docker ps | grep -q ${DB_CONTAINER_NAME}; then \
-		echo "${RED}❌ Database container not running. Start it with 'make db-up'${NC}"; \
-		exit 1; \
-	fi
-	@if ! docker exec ${DB_CONTAINER_NAME} pg_isready -U $(DB_USER) >/dev/null 2>&1; then \
-		echo "${RED}❌ Database is not accepting connections${NC}"; \
-		exit 1; \
+	@if [ "$$(docker ps -q -f name=db)" = "" ]; then \
+		echo "❌ DB container is not running."; \
+	else \
+		$(DOCKER_COMPOSE) logs -f db; \
 	fi
 
-.PHONY: migrate-summary
-migrate-summary: ## Show migration summary (counts)
-	@echo "${BLUE}📈 Migration Summary:${NC}"
-	@echo -n "${GREEN}✅ Total migration files: ${NC}"
-	@ls migrations/*.sql | wc -l
-	@echo -n "${YELLOW}📝 Applied migrations: ${NC}"
-	@goose -dir migrations postgres "$(DB_URL)" status 2>&1 | grep -v "Applied At" | grep -v "=======" | grep -v "Pending" | grep " -- " | wc -l || echo "0"
-	@echo -n "${RED}⏳ Pending migrations: ${NC}"
-	@goose -dir migrations postgres "$(DB_URL)" status 2>&1 | grep "Pending" | wc -l || echo "0"
+## Quick Access Commands
+.PHONY: start
+start: docker-up ## Quick start (alias for docker-up)
 
-.PHONY: migrate-version
-migrate-version: ## Show current migration version
-	@echo "${BLUE}🔍 Current Migration Version:${NC}"
-	@$(MAKE) goose-check
-	@goose -dir migrations postgres "$(DB_URL)" version
+.PHONY: stop
+stop: docker-down ## Quick stop (alias for docker-down)
 
-.PHONY: migrate-sync
-migrate-sync: ## Sync Goose with existing database state (mark all migrations as applied)
-	@echo "${BLUE}🔄 Syncing Goose migration status with existing database...${NC}"
-	@$(MAKE) goose-check
-	@echo "${YELLOW}⚠️  This will mark all existing migrations as applied without running them${NC}"
-	@read -p "Continue? Database appears to have all tables already. (y/N): " confirm && [ "$$confirm" = "y" ] || [ "$$confirm" = "Y" ] || (echo "Sync cancelled." && exit 1)
-	@echo "${BLUE}📝 Marking migrations as applied...${NC}"
-	@for migration in $$(ls migrations/*.sql | sort | xargs -n1 basename | sed 's/.sql//' | sed 's/_.*//'); do \
-		echo "INSERT INTO goose_db_version (version_id, is_applied, tstamp) SELECT $$migration, true, NOW() WHERE NOT EXISTS (SELECT 1 FROM goose_db_version WHERE version_id = $$migration);" | \
-		docker exec -i ${DB_CONTAINER_NAME} psql -U $(DB_USER) -d $(DB_NAME); \
-	done
-	@echo "${GREEN}✅ Migration sync complete!${NC}"
-	@$(MAKE) migrate-summary
+.PHONY: logs
+logs: docker-logs ## Show logs for all services
+
+.PHONY: dev
+dev: db-up run ## Start database and run API locally
+
+.PHONY: clean
+clean: ## Clean build artifacts
+	@echo "🧹 Cleaning build artifacts..."
+	@rm -rf $(BUILD_DIR)
+	@rm -f coverage.out coverage.html
+	@echo "✅ Clean complete"
 
 ## Utility Commands
 .PHONY: env-check
@@ -229,32 +256,35 @@ env-check: ## Check if .env file exists
 		echo "${YELLOW}⚠️  .env file not found. Creating from .env.example...${NC}"; \
 		cp .env.example .env; \
 		echo "${GREEN}✅ .env file created. Please update it with your values.${NC}"; \
+	else \
+		echo "${BLUE}ℹ️  .env file already exists. Skipping creation.${NC}"; \
 	fi
 
 .PHONY: check-deps
 check-deps: ## Check required dependencies
 	@echo "${BLUE}🔍 Checking dependencies...${NC}"
+	@echo "Checking required dependencies..."
 	@command -v docker >/dev/null 2>&1 || (echo "${RED}❌ Docker is required but not installed${NC}" && exit 1)
-	@command -v docker-compose >/dev/null 2>&1 || command -v docker compose >/dev/null 2>&1 || (echo "${RED}❌ Docker Compose is required but not installed${NC}" && exit 1)
-	@command -v go >/dev/null 2>&1 || (echo "${RED}❌ Go is required but not installed${NC}" && exit 1)
-	@echo "${GREEN}✅ All dependencies are available!${NC}"
-
+	@command -v docker >/dev/null 2>&1 && (docker compose version >/dev/null 2>&1 || docker-compose --version >/dev/null 2>&1) || (echo "${RED}❌ Docker Compose is required but not installed${NC}" && exit 1)
+	@if command -v go >/dev/null 2>&1; then \
+		echo "${GREEN}Go is available${NC}"; \
+	elif test -x /usr/local/go/bin/go; then \
+		echo "${YELLOW}⚠️  Go found at /usr/local/go/bin/go but not in PATH${NC}"; \
+	else \
+		echo "${RED}❌ Go is required but not installed${NC}" && exit 1; \
+	fi
+	@echo "Checking recommended dependencies..."
+	@command -v psql >/dev/null 2>&1 || echo "${YELLOW}⚠️  psql (PostgreSQL client) is recommended but not installed${NC}"
+	@command -v goose >/dev/null 2>&1 || echo "${YELLOW}⚠️  goose migration tool is recommended but not installed. Install with: go install github.com/pressly/goose/v3/cmd/goose@latest${NC}"
+	@echo "${GREEN}✅ All required dependencies are available!${NC}"
+	
 ## Legacy Commands (for backward compatibility)
-.PHONY: up down db start_be
+.PHONY: up down
 up: docker-up ## Legacy: Start all services
-down: docker-down ## Legacy: Stop all services  
-db: db-up ## Legacy: Start database
-start_be: dev-run ## Legacy: Start backend services
+down: docker-down ## Legacy: Stop all services
 
 # Default target
 .DEFAULT_GOAL := help
-
-.PHONY: clean
-clean: ## Clean build artifacts
-	@echo "🧹 Cleaning build artifacts..."
-	@rm -rf $(BUILD_DIR)
-	@rm -f coverage.out coverage.html
-	@echo "✅ Clean complete"
 
 .PHONY: docker-up
 docker-up: ## Start Docker containers
@@ -273,28 +303,25 @@ docker-restart: docker-down docker-up ## Restart Docker containers
 
 .PHONY: docker-logs
 docker-logs: ## Show Docker logs
-	@docker compose logs -f
-
-.PHONY: logs
-logs: docker-logs ## Alias for docker-logs
+	$(DOCKER_COMPOSE) logs -f
 
 .PHONY: docker-clean
 docker-clean: ## Clean Docker resources
 	@echo "🧹 Cleaning Docker resources..."
-	@docker compose down -v --remove-orphans
+	$(DOCKER_COMPOSE) down -v --remove-orphans
 	@docker system prune -f
 	@echo "✅ Docker cleanup complete"
 
 .PHONY: db-up
 db-up: ## Start only the database
 	@echo "🐘 Starting database..."
-	@docker compose up -d db
+	$(DOCKER_COMPOSE) up -d db
 	@echo "✅ Database started"
 
 .PHONY: db-down
 db-down: ## Stop the database
 	@echo "🐘 Stopping database..."
-	@docker compose stop db
+	$(DOCKER_COMPOSE) stop db
 	@echo "✅ Database stopped"
 
 .PHONY: db-shell
@@ -321,81 +348,17 @@ db-reset: ## Reset database (WARNING: This will delete all data)
 	@read -p "Are you sure? [y/N] " -n 1 -r; \
 	if [[ $$REPLY =~ ^[Yy]$$ ]]; then \
 		echo "\n🗑️  Resetting database..."; \
-		docker compose down -v; \
-		docker compose up -d db; \
+		$(DOCKER_COMPOSE) down -v; \
+		$(DOCKER_COMPOSE) up -d db; \
 		echo "✅ Database reset complete"; \
 	else \
 		echo "\n❌ Database reset cancelled"; \
 	fi
 
-.PHONY: install-goose
-install-goose: ## Install Goose migration tool
-	@echo "📦 Installing Goose..."
-	@go install github.com/pressly/goose/v3/cmd/goose@latest
-	@echo "✅ Goose installed"
-
-.PHONY: migrate
-migrate: migrate-up ## Alias for migrate-up
-
-.PHONY: migrate-up
-migrate-up: ## Run all pending migrations
-	@echo "🔄 Running migrations..."
-	@goose -dir migrations postgres "$(DB_URL)" up
-	@echo "✅ Migrations complete"
-
-.PHONY: migrate-down
-migrate-down: ## Rollback last migration
-	@echo "⬇️  Rolling back last migration..."
-	@goose -dir migrations postgres "$(DB_URL)" down
-	@echo "✅ Rollback complete"
-
-.PHONY: migrate-status
-migrate-status: ## Show migration status
-	@echo "📊 Migration status:"
-	@goose -dir migrations postgres "$(DB_URL)" status
-
-.PHONY: migrate-create
-migrate-create: ## Create new migration (requires NAME variable)
-	@echo "📝 Creating migration: $(NAME)"
-	@goose -dir migrations create $(NAME) sql
-	@echo "✅ Migration created"
-
-.PHONY: migrate-to
-migrate-to: ## Migrate to specific version (requires VERSION variable)
-	@echo "🎯 Migrating to version: $(VERSION)"
-	@goose -dir migrations postgres "$(DB_URL)" to $(VERSION)
-	@echo "✅ Migration to version $(VERSION) complete"
-
-.PHONY: migrate-reset
-migrate-reset: ## Reset all migrations (WARNING: This will delete all data)
-	@echo "⚠️  WARNING: This will delete all migration data!"
-	@read -p "Are you sure? [y/N] " -n 1 -r; \
-	if [[ $$REPLY =~ ^[Yy]$$ ]]; then \
-		echo "\n🗑️  Resetting migrations..."; \
-		goose -dir migrations postgres "$(DB_URL)" reset; \
-		echo "✅ Migrations reset complete"; \
-	else \
-		echo "\n❌ Migration reset cancelled"; \
-	fi
-
-.PHONY: env-example
-env-example: ## Copy .env.example to .env
-	@cp .env.example .env
-	@echo "✅ .env file created from .env.example"
-
 .PHONY: health
 health: ## Check API health
 	@echo "🏥 Checking API health..."
 	@curl -f http://localhost:$(PORT)/health || echo "❌ API is not responding"
-
-.PHONY: start
-start: docker-up ## Quick start (alias for docker-up)
-
-.PHONY: stop
-stop: docker-down ## Quick stop (alias for docker-down)
-
-.PHONY: dev
-dev: db-up run ## Start database and run API locally
 
 .PHONY: status
 status: ## Show status of all services
@@ -403,28 +366,48 @@ status: ## Show status of all services
 	@echo "════════════════════════════════════════════════════════════"
 	@echo ""
 	@echo "🐳 Docker Compose Services:"
-	@docker compose ps --format "table {{.Name}}\t{{.State}}\t{{.Status}}\t{{.Ports}}" 2>/dev/null || echo "❌ No services running"
+	@$(DOCKER_COMPOSE) ps --format "table {{.Name}}\t{{.State}}\t{{.Status}}\t{{.Ports}}" 2>/dev/null || echo "❌ No services running"
 	@echo ""
 	@echo "🌐 Network Status:"
-	@docker network ls --filter name=$(NETWORK_NAME) --format "table {{.Name}}\t{{.Driver}}\t{{.Scope}}" 2>/dev/null || echo "❌ No custom networks found"
+	@NETWORKS=$$(docker network ls --format "{{.Name}}"); \
+	if [ -n "$$NETWORKS" ]; then \
+		echo "$$NETWORKS" | grep -E "$(PROJECT_NAME|taskflow)" | while read network; do \
+			echo "  ✅ $$network"; \
+		done || echo "  ❌ No matching project networks found"; \
+	else \
+		echo "  ❌ No networks found"; \
+	fi
 	@echo ""
 	@echo "📦 Container Details:"
-	@echo "Database Container: ${DB_CONTAINER_NAME}"
-	@echo "API Container: ${API_CONTAINER_NAME}"
-	@echo "Migration Container: ${MIGRATION_CONTAINER_NAME}"
+	@echo "Database Container: $(DB_CONTAINER_NAME)"
+	@echo "API Container:      $(API_CONTAINER_NAME)"
+	@echo "Migration Container: $(MIGRATION_CONTAINER_NAME)"
 	@echo ""
 	@echo "🔗 Service URLs:"
 	@echo "  API:         http://localhost:$(PORT)"
 	@echo "  Health:      http://localhost:$(PORT)/health"
 	@echo "  Database:    localhost:$(DB_PORT)"
 	@echo ""
+	@echo "💾 Volume Status:"
+	@VOLUMES=$$(docker volume ls --format "{{.Name}}"); \
+	if [ -n "$$VOLUMES" ]; then \
+		echo "$$VOLUMES" | grep -E "$(PROJECT_NAME|taskflow)" | while read volume; do \
+			echo "  ✅ $$volume"; \
+		done || echo "  ❌ No matching project volumes found"; \
+	else \
+		echo "  ❌ No volumes found"; \
+	fi
+	@echo ""
+	@echo "🔍 Health Checks:"
+	@if docker ps --filter name=$(DB_CONTAINER_NAME) --filter status=running -q | grep -q .; then \
+		echo "  Database: ✅ Running"; \
+	else \
+		echo "  Database: ❌ Not running"; \
+	fi
+	@if docker ps --filter name=$(API_CONTAINER_NAME) --filter status=running -q | grep -q .; then \
+		echo "  API: ✅ Running"; \
+	else \
+		echo "  API: ❌ Not running"; \
+	fi
+	@echo ""
 
-.PHONY: info
-info: ## Show project information
-	@echo "📋 TaskFlow API Information"
-	@echo "   App Name: $(APP_NAME)"
-	@echo "   Port: $(PORT)"
-	@echo "   Environment: $(ENV)"
-	@echo "   Database: $(DB_NAME)@$(DB_HOST):$(DB_PORT)"
-	@echo "   API URL: http://localhost:$(PORT)"
-	@echo "   Health Check: http://localhost:$(PORT)/health"

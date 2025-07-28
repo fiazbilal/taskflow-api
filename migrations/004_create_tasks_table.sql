@@ -3,7 +3,7 @@
 
 -- Create tasks table
 CREATE TABLE tasks (
-    id UUID PRIMARY KEY DEFAULT uuid_gen_v4(),
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     title VARCHAR(255) NOT NULL,
     description TEXT,
     project_id UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,

@@ -29,10 +29,8 @@ func main() {
 		log.Fatal("Failed to connect to database:", err)
 	}
 
-	// Auto-migrate database schema
-	if err := autoMigrate(db); err != nil {
-		log.Fatal("Failed to migrate database:", err)
-	}
+	// Database migrations are handled by external tool (goose)
+	log.Println("✅ Database connection established")
 
 	// Initialize Fiber app
 	app := fiber.New(fiber.Config{

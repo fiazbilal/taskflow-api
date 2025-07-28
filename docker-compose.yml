@@ -11,6 +11,14 @@ services:
       - "${DB_PORT:-5433}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    networks:
+      - local_net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-postgres}"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
 
   api:
     build:
@@ -33,7 +41,10 @@ services:
     env_file:
       - .env
     depends_on:
-      - db
+      db:
+        condition: service_healthy
+    networks:
+      - local_net
 
   migrations:
     build:
@@ -47,7 +58,8 @@ services:
       APP_DB_PORT: "5432"
       APP_DB_DATABASE: ${DB_NAME:-taskflow}
     depends_on:
-      - db
+      db:
+        condition: service_healthy
     networks:
       - local_net
 
