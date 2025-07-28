@@ -164,10 +164,16 @@ docker-build-api: ## Build only API Docker image
 	@echo "${GREEN}✅ API Docker image built!${NC}"
 
 .PHONY: docker-build
-docker-build: ## Build Docker image
-	@echo "🐳 Building Docker image..."
-	@docker build -t $(DOCKER_IMAGE):$(DOCKER_TAG) .
-	@echo "✅ Docker image built: $(DOCKER_IMAGE):$(DOCKER_TAG)"
+docker-build: ## Build all Docker images using Docker Compose
+	@echo "🐳 Building Docker images for all services..."
+	@$(DOCKER_COMPOSE) build
+	@echo "✅ Docker images built"
+
+.PHONY: docker-rebuild
+docker-rebuild: ## Rebuild Docker images (force rebuild)
+	@echo "🔨 Rebuilding Docker images..."
+	@$(DOCKER_COMPOSE) build --no-cache
+	@echo "✅ Docker images rebuilt"
 
 ## Migration Commands (Using Goose)
 .PHONY: install-goose
@@ -191,10 +197,6 @@ migrate-down: ## Rollback last migration
 .PHONY: migrate-status
 migrate-status: ## Show migration status
 	@echo "📊 Migration status:"
-	@if ! nc -z localhost $(DB_PORT); then \
-		echo "❌ Error: Database is not running on port $(DB_PORT)"; \
-		exit 1; \
-	fi
 	@goose -dir migrations postgres "$(DB_URL)" status
 
 .PHONY: migrate-create
@@ -212,7 +214,7 @@ migrate-create: ## Create new migration (requires NAME variable)
 .PHONY: migrate-reset
 migrate-reset: ## Reset all migrations (WARNING: This will delete all data)
 	@echo "⚠️  WARNING: This will delete all migration data!"
-	@echo "Are you sure? [y/N] \c" && read ans && [ "$$ans" = y ] || { echo "❌ Migration reset cancelled"; exit 1; } \
+	@echo "Are you sure? [y/N] " && read ans && [ "$$ans" = y ] || { echo "❌ Migration reset cancelled"; exit 1; } \
 	&& echo "Resetting migrations..." \
 	&& goose -dir migrations postgres "$(DB_URL)" reset \
 	&& echo "✅ Database reset complete"
@@ -230,9 +232,16 @@ migrate-summary: ## Show migration summary (counts)
 ## Enhanced Database Commands
 .PHONY: db-wait
 db-wait: ## Wait for database to be ready
-	@echo "${YELLOW}⏳ Waiting for database connection...${NC}"
-	@timeout 60 bash -c 'until docker exec ${DB_CONTAINER_NAME} pg_isready -U $(DB_USER); do sleep 1; done' || (echo "${RED}❌ Database failed to start in 60 seconds${NC}" && exit 1)
-	@echo "${GREEN}✅ Database is ready!${NC}"
+	@echo "${YELLOW}⏳ Waiting for database connection... (max 60 seconds)${NC}"
+	@for i in $$(seq 1 60); do \
+		if docker exec ${DB_CONTAINER_NAME} pg_isready -U $(DB_USER) >/dev/null 2>&1; then \
+			echo "${GREEN}✅ Database is ready!${NC}"; \
+			exit 0; \
+		fi; \
+		sleep 1; \
+	done; \
+	echo "${RED}❌ Database failed to start in 60 seconds${NC}"; \
+	exit 1
 
 ## Enhanced Logging Commands
 .PHONY: logs-api
@@ -279,11 +288,10 @@ env-check: ## Check if .env file exists and required variables are set
 		echo "${BLUE}ℹ️  .env file found.${NC}"; \
 	fi
 
-	@# POSIX-compatible check for required variables
 	@REQUIRED_VARS="DB_CONTAINER_NAME API_CONTAINER_NAME PORT DB_USER DB_PASSWORD DB_HOST DB_PORT DB_NAME DB_SSL_MODE" \
 	MISSING=0; \
 	for var in $$REQUIRED_VARS; do \
-		eval "value=\$$var"; \
+		eval "value=\$$$$var"; \
 		if [ -z "$$value" ]; then \
 			echo "${RED}❌ Environment variable '$$var' is not set. Please check your .env file.${NC}"; \
 			MISSING=1; \
@@ -296,7 +304,6 @@ env-check: ## Check if .env file exists and required variables are set
 .PHONY: check-deps
 check-deps: ## Check required dependencies
 	@echo "${BLUE}🔍 Checking dependencies...${NC}"
-	@echo "Checking required dependencies..."
 	@command -v docker >/dev/null 2>&1 || (echo "${RED}❌ Docker is required but not installed${NC}" && exit 1)
 	@command -v docker >/dev/null 2>&1 && (docker compose version >/dev/null 2>&1 || docker-compose --version >/dev/null 2>&1) || (echo "${RED}❌ Docker Compose is required but not installed${NC}" && exit 1)
 	@if command -v go >/dev/null 2>&1; then \
@@ -336,20 +343,19 @@ docker-logs: ## Show Docker logs
 .PHONY: docker-clean
 docker-clean: ## Clean Docker resources
 	@echo "🧹 Cleaning Docker resources..."
-	$(DOCKER_COMPOSE) down -v --remove-orphans
-	@docker system prune -f
+	@$(DOCKER_COMPOSE) down -v --rmi all --remove-orphans
 	@echo "✅ Docker cleanup complete"
 
 .PHONY: db-up
 db-up: ## Start only the database
 	@echo "🐘 Starting database..."
-	$(DOCKER_COMPOSE) up -d db
+	@$(DOCKER_COMPOSE) up -d db
 	@echo "✅ Database started"
 
 .PHONY: db-down
 db-down: ## Stop the database
 	@echo "🐘 Stopping database..."
-	$(DOCKER_COMPOSE) stop db
+	@$(DOCKER_COMPOSE) stop db
 	@echo "✅ Database stopped"
 
 .PHONY: db-shell
@@ -366,6 +372,11 @@ db-backup: ## Backup database
 
 .PHONY: db-restore
 db-restore: ## Restore database (requires BACKUP_FILE variable)
+	@if [ -z "$(BACKUP_FILE)" ]; then \
+		echo "${RED}❌ BACKUP_FILE variable is required${NC}"; \
+		echo "${BLUE}💡 Usage: make db-restore BACKUP_FILE=path/to/backup.sql${NC}"; \
+		exit 1; \
+	fi
 	@echo "📥 Restoring database from $(BACKUP_FILE)..."
 	@docker exec -i ${DB_CONTAINER_NAME} psql -U $(DB_USER) -d $(DB_NAME) < $(BACKUP_FILE)
 	@echo "✅ Database restored"
@@ -375,12 +386,12 @@ db-reset: ## Reset database (WARNING: This will delete all data)
 	@echo "⚠️  WARNING: This will delete all data!"
 	@bash -c 'read -p "Are you sure? [y/N] " ans; \
 	if [ "$$ans" = "y" ] || [ "$$ans" = "Y" ]; then \
-	echo "🗑️  Resetting database..."; \
-	$(DOCKER_COMPOSE) down -v; \
-	$(DOCKER_COMPOSE) up -d db; \
-	echo "✅ Database reset complete"; \
+		echo "🗑️  Resetting database..."; \
+		$(DOCKER_COMPOSE) down -v; \
+		$(DOCKER_COMPOSE) up -d db; \
+		echo "✅ Database reset complete"; \
 	else \
-	echo "❌ Database reset cancelled"; \
+		echo "❌ Database reset cancelled"; \
 	fi'
 
 .PHONY: health
@@ -396,35 +407,10 @@ status: ## Show status of all services
 	@echo "🐳 Docker Compose Services:"
 	@$(DOCKER_COMPOSE) ps --format "table {{.Name}}\t{{.State}}\t{{.Status}}\t{{.Ports}}" 2>/dev/null || echo "❌ No services running"
 	@echo ""
-	@echo "🌐 Network Status:"
-	@NETWORKS=$$(docker network ls --format "{{.Name}}"); \
-	if [ -n "$$NETWORKS" ]; then \
-		echo "$$NETWORKS" | grep -E "$(PROJECT_NAME|taskflow)" | while read network; do \
-			echo "  ✅ $$network";
-		done || echo "  ❌ No matching project networks found"; \
-	else \
-		echo "  ❌ No networks found"; \
-	fi
-	@echo ""
-	@echo "📦 Container Details:"
-	@echo "Database Container: $(DB_CONTAINER_NAME)"
-	@echo "API Container:      $(API_CONTAINER_NAME)"
-	@echo "Migration Container: $(MIGRATION_CONTAINER_NAME)"
-	@echo ""
 	@echo "🔗 Service URLs:"
 	@echo "  API:         http://localhost:$(PORT)"
 	@echo "  Health:      http://localhost:$(PORT)/health"
 	@echo "  Database:    localhost:$(DB_PORT)"
-	@echo ""
-	@echo "💾 Volume Status:"
-	@VOLUMES=$$(docker volume ls --format "{{.Name}}"); \
-	if [ -n "$$VOLUMES" ]; then \
-		echo "$$VOLUMES" | grep -E "$(PROJECT_NAME|taskflow)" | while read volume; do \
-			echo "  ✅ $$volume"; \
-		done || echo "  ❌ No matching project volumes found"; \
-	else \
-		echo "  ❌ No volumes found"; \
-	fi
 	@echo ""
 	@echo "🔍 Health Checks:"
 	@if docker ps --filter name=$(DB_CONTAINER_NAME) --filter status=running -q | grep -q .; then \
