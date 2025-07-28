@@ -126,18 +126,3 @@ func initDatabase(cfg *config.Config) (*gorm.DB, error) {
 	log.Println("✅ Database connected successfully")
 	return db, nil
 }
-
-func autoMigrate(db *gorm.DB) error {
-	log.Println("🔄 Running database migrations...")
-
-	if err := db.AutoMigrate(
-		&models.User{},
-		&models.Project{},
-		&models.Task{},
-	); err != nil {
-		return err
-	}
-
-	log.Println("✅ Database migrations completed")
-	return nil
-}

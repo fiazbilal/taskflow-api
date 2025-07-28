@@ -398,6 +398,7 @@ db-reset: ## Reset database (WARNING: This will delete all data)
 health: ## Check API health
 	@echo "🏥 Checking API health..."
 	@curl -f http://localhost:$(PORT)/health || echo "❌ API is not responding"
+	@echo ""
 
 .PHONY: status
 status: ## Show status of all services
