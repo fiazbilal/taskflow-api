@@ -75,7 +75,7 @@ dev-run: ## Start full development environment (DB + API in containers)
 	@echo "${BLUE}🚀 Starting development environment...${NC}"
 	@$(MAKE) docker-down
 	@$(MAKE) db-up
-	@sleep 5  # wait for DB to be ready
+	@$(MAKE) db-wait
 	@$(MAKE) migrate-up
 	@$(MAKE) run
 	@echo "${GREEN}✅ Development environment is running!${NC}"
@@ -141,12 +141,20 @@ build-linux: ## Build Go binary for Linux
 	@GOOS=linux GOARCH=amd64 $(GO_BUILD) -o $(BINARY_PATH)-linux $(MAIN_FILE)
 	@echo "${GREEN}✅ Linux binary built: $(BINARY_PATH)-linux${NC}"
 
+.PHONY: rebuild-linux
+rebuild-linux: clean build-linux ## Clean and build for Linux
+	@echo "${GREEN}✅ Linux rebuild complete!${NC}"
+
 .PHONY: build
 build: ## Build the application
 	@echo "🔨 Building application..."
 	@mkdir -p $(BUILD_DIR)
 	@go build -o $(BUILD_DIR)/$(APP_NAME) $(MAIN_FILE)
 	@echo "✅ Build complete: $(BUILD_DIR)/$(APP_NAME)"
+
+.PHONY: rebuild
+rebuild: clean build ## Clean and build the application
+	@echo "${GREEN}✅ Rebuild complete!${NC}"
 
 ## Docker Commands
 .PHONY: docker-build-api
@@ -262,13 +270,27 @@ clean: ## Clean build artifacts
 
 ## Utility Commands
 .PHONY: env-check
-env-check: ## Check if .env file exists
+env-check: ## Check if .env file exists and required variables are set
 	@if [ ! -f .env ]; then \
 		echo "${YELLOW}⚠️  .env file not found. Creating from .env.example...${NC}"; \
 		cp .env.example .env; \
 		echo "${GREEN}✅ .env file created. Please update it with your values.${NC}"; \
 	else \
-		echo "${BLUE}ℹ️  .env file already exists. Skipping creation.${NC}"; \
+		echo "${BLUE}ℹ️  .env file found.${NC}"; \
+	fi
+
+	@# POSIX-compatible check for required variables
+	@REQUIRED_VARS="DB_CONTAINER_NAME API_CONTAINER_NAME PORT DB_USER DB_PASSWORD DB_HOST DB_PORT DB_NAME DB_SSL_MODE" \
+	MISSING=0; \
+	for var in $$REQUIRED_VARS; do \
+		eval "value=\$$var"; \
+		if [ -z "$$value" ]; then \
+			echo "${RED}❌ Environment variable '$$var' is not set. Please check your .env file.${NC}"; \
+			MISSING=1; \
+		fi; \
+	done; \
+	if [ $$MISSING -eq 1 ]; then \
+		exit 1; \
 	fi
 
 .PHONY: check-deps
@@ -351,15 +373,15 @@ db-restore: ## Restore database (requires BACKUP_FILE variable)
 .PHONY: db-reset
 db-reset: ## Reset database (WARNING: This will delete all data)
 	@echo "⚠️  WARNING: This will delete all data!"
-	@read -p "Are you sure? [y/N] " -n 1 -r; \
-	if [[ $$REPLY =~ ^[Yy]$$ ]]; then \
-		echo "\n🗑️  Resetting database..."; \
-		$(DOCKER_COMPOSE) down -v; \
-		$(DOCKER_COMPOSE) up -d db; \
-		echo "✅ Database reset complete"; \
+	@bash -c 'read -p "Are you sure? [y/N] " ans; \
+	if [ "$$ans" = "y" ] || [ "$$ans" = "Y" ]; then \
+	echo "🗑️  Resetting database..."; \
+	$(DOCKER_COMPOSE) down -v; \
+	$(DOCKER_COMPOSE) up -d db; \
+	echo "✅ Database reset complete"; \
 	else \
-		echo "\n❌ Database reset cancelled"; \
-	fi
+	echo "❌ Database reset cancelled"; \
+	fi'
 
 .PHONY: health
 health: ## Check API health
@@ -378,7 +400,7 @@ status: ## Show status of all services
 	@NETWORKS=$$(docker network ls --format "{{.Name}}"); \
 	if [ -n "$$NETWORKS" ]; then \
 		echo "$$NETWORKS" | grep -E "$(PROJECT_NAME|taskflow)" | while read network; do \
-			echo "  ✅ $$network"; \docker-up
+			echo "  ✅ $$network";
 		done || echo "  ❌ No matching project networks found"; \
 	else \
 		echo "  ❌ No networks found"; \
