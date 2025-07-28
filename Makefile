@@ -70,21 +70,21 @@ setup: ## Start all containers (db, api, migrations), wait for DB readiness, and
 	@echo "${GREEN}✅ Setup complete! All services are running with migrations applied.${NC}"
 	@$(MAKE) status
 
-## Development Commands
-.PHONY: run
-run: ## Run the application
-	@echo "🚀 Starting TaskFlow API..."
-	@go run $(MAIN_FILE)
-
 .PHONY: dev-run
 dev-run: ## Start full development environment (DB + API in containers)
 	@echo "${BLUE}🚀 Starting development environment...${NC}"
 	@$(MAKE) docker-down
 	@$(MAKE) db-up
-	@$(MAKE) docker-build-api
-	@$(DOCKER_COMPOSE) up -d api
+	@sleep 5  # wait for DB to be ready
+	@$(MAKE) migrate-up
+	@$(MAKE) run
 	@echo "${GREEN}✅ Development environment is running!${NC}"
-	@$(MAKE) logs-api
+
+## Development Commands
+.PHONY: run
+run: ## Run the application
+	@echo "🚀 Starting TaskFlow API..."
+	@go run $(MAIN_FILE)
 
 ## Enhanced Testing Commands
 .PHONY: test-race
