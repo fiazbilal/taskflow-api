@@ -183,6 +183,10 @@ migrate-down: ## Rollback last migration
 .PHONY: migrate-status
 migrate-status: ## Show migration status
 	@echo "📊 Migration status:"
+	@if ! nc -z localhost $(DB_PORT); then \
+		echo "❌ Error: Database is not running on port $(DB_PORT)"; \
+		exit 1; \
+	fi
 	@goose -dir migrations postgres "$(DB_URL)" status
 
 .PHONY: migrate-create
@@ -204,6 +208,16 @@ migrate-reset: ## Reset all migrations (WARNING: This will delete all data)
 	&& echo "Resetting migrations..." \
 	&& goose -dir migrations postgres "$(DB_URL)" reset \
 	&& echo "✅ Database reset complete"
+
+.PHONY: migrate-summary
+migrate-summary: ## Show migration summary (counts)
+	@echo "${BLUE}📈 Migration Summary:${NC}"
+	@echo -n "${GREEN}✅ Total migration files: ${NC}"
+	@find migrations -name '*.sql' | wc -l
+	@echo -n "${YELLOW}📝 Applied migrations: ${NC}"
+	@goose -dir migrations postgres "$(DB_URL)" status 2>&1 | grep -v "Applied At" | grep -v "=======" | grep -v "Pending" | grep -c " -- " || echo "0"
+	@echo -n "${RED}⏳ Pending migrations: ${NC}"
+	@goose -dir migrations postgres "$(DB_URL)" status 2>&1 | grep -c "Pending" || echo "0"
 
 ## Enhanced Database Commands
 .PHONY: db-wait
@@ -238,9 +252,6 @@ stop: docker-down ## Quick stop (alias for docker-down)
 
 .PHONY: logs
 logs: docker-logs ## Show logs for all services
-
-.PHONY: dev
-dev: db-up run ## Start database and run API locally
 
 .PHONY: clean
 clean: ## Clean build artifacts
@@ -277,11 +288,6 @@ check-deps: ## Check required dependencies
 	@command -v psql >/dev/null 2>&1 || echo "${YELLOW}⚠️  psql (PostgreSQL client) is recommended but not installed${NC}"
 	@command -v goose >/dev/null 2>&1 || echo "${YELLOW}⚠️  goose migration tool is recommended but not installed. Install with: go install github.com/pressly/goose/v3/cmd/goose@latest${NC}"
 	@echo "${GREEN}✅ All required dependencies are available!${NC}"
-	
-## Legacy Commands (for backward compatibility)
-.PHONY: up down
-up: docker-up ## Legacy: Start all services
-down: docker-down ## Legacy: Stop all services
 
 # Default target
 .DEFAULT_GOAL := help
@@ -372,7 +378,7 @@ status: ## Show status of all services
 	@NETWORKS=$$(docker network ls --format "{{.Name}}"); \
 	if [ -n "$$NETWORKS" ]; then \
 		echo "$$NETWORKS" | grep -E "$(PROJECT_NAME|taskflow)" | while read network; do \
-			echo "  ✅ $$network"; \
+			echo "  ✅ $$network"; \docker-up
 		done || echo "  ❌ No matching project networks found"; \
 	else \
 		echo "  ❌ No networks found"; \
@@ -410,4 +416,3 @@ status: ## Show status of all services
 		echo "  API: ❌ Not running"; \
 	fi
 	@echo ""
-

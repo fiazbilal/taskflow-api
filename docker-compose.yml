@@ -57,6 +57,8 @@ services:
       APP_DB_HOST: ${DOCKER_DB_HOST:-db}
       APP_DB_PORT: "5432"
       APP_DB_DATABASE: ${DB_NAME:-taskflow}
+    env_file:
+      - .env 
     depends_on:
       db:
         condition: service_healthy
